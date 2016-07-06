@@ -1,0 +1,731 @@
+--- /dev/null
++++ b/drivers/mtd/nand/ralink_nand.c
+@@ -0,0 +1,706 @@
++/*
++ *  Copyright (C) 2009-2016, Michael Lee <igvtee@gmail.com>
++ *  MediaTek MT7620 SoC NAND controller driver
++ *
++ *  This program is free software; you can redistribute it and/or modify it
++ *  under  the terms of the GNU General  Public License as published by the
++ *  Free Software Foundation;  either version 2 of the License, or (at your
++ *  option) any later version.
++ */
++
++#define DEBUG 1
++
++#include <linux/ioport.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/nand.h>
++#include <linux/mtd/nand_ecc.h>
++#include <linux/mtd/partitions.h>
++#include <linux/reset.h>
++#include <linux/delay.h>
++
++#define NAND_DRIVER_NAME "mt7620-nand"
++
++#define RA_NAND_CTRL0		0x10
++#define RA_NAND_TRANS_CFG	0x14
++#define RA_NAND_CMD1		0x18
++#define RA_NAND_CMD2		0x1c
++#define RA_NAND_CMD3		0x20
++#define RA_NAND_ADDR		0x24
++#define RA_NAND_DATA		0x28
++#define RA_NAND_STATUS		0x30
++#define RA_NAND_INT_ENA		0x34
++#define RA_NAND_INT_STA		0x38
++#define RA_NAND_CTRL1		0x3c
++#define RA_NAND_ECC1		0x40
++#define RA_NAND_ECC2		0x44
++#define RA_NAND_ECC3		0x48
++#define RA_NAND_ECC4		0x4c
++#define RA_NAND_ECC_ERR1	0x50
++#define RA_NAND_ECC_ERR2	0x54
++#define RA_NAND_ECC_ERR3	0x58
++#define RA_NAND_ECC_ERR4	0x5c
++#define RA_NAND_ADDR2		0x60
++
++/* RA_NAND_CTRL0 */
++#define RA_CTRL0_TWAITB_OFFSET	16
++#define RA_CTRL0_TWAITB_MASK	0xff
++#define RA_CTRL0_THOLD_OFFSET	12
++#define RA_CTRL0_THOLD_MASK	0xf
++#define RA_CTRL0_TPERIOD_OFFSET	8
++#define RA_CTRL0_TPERIOD_MASK	0xf
++#define RA_CTRL0_TSETUP_OFFSET	4
++#define RA_CTRL0_TSETUP_MASK	0xf
++#define RA_CTRL0_BURST_OFFSET	2
++#define RA_CTRL0_BURST_MAST	0x3
++#define RA_CTRL0_DBUF_CLR	BIT(1)
++#define RA_CTRL0_WP		BIT(0)
++#define RA_CTRL0_TIME_DEFAULT	0xc82f20
++#define RA_CTRL0_TIME_MASK	(0xfffff << RA_CTRL0_TSETUP_OFFSET)
++
++/* RA_NAND_TRANS_CFG */
++#define RA_TCFG_DATA_OFFSET	20
++#define RA_TCFG_ADDR_OFFSET	16
++#define RA_TCFG_ADDR_MASK	0x7
++#define RA_TCFG_CMD3_OFFSET	12
++#define RA_TCFG_CMD2_OFFSET	10
++#define RA_TCFG_CMD1_OFFSET	8
++#define RA_TCFG_CMD_MASK	0x3
++#define RA_TCFG_RESPB_DATA	BIT(7)
++#define RA_TCFG_RESPB_ADDR	BIT(6)
++#define RA_TCFG_RESPB_CMD3	BIT(5)
++#define RA_TCFG_RESPB_CMD2	BIT(4)
++#define RA_TCFG_ECC_EN		BIT(3)
++#define RA_TCFG_DMA_EN		BIT(2)
++#define RA_TCFG_WR_TRANS	BIT(1)
++#define RA_TCFG_KICK_TRANS	BIT(0)
++
++/* RA_NAND_STATUS */
++#define RA_STATUS_DEC_BYTE_OFFSET	8
++#define RA_STATUS_DEC_BYTE_MASK	0x1ff
++#define RA_STATUS_DEC_BIT_OFFSET	4
++#define RA_STATUS_DEC_BIT_MASK	0x7
++#define RA_STATUS_ND_READY	BIT(2)
++#define RA_STATUS_DEC_ERR	BIT(1)
++#define RA_STATUS_BUSY		BIT(0)
++
++/* RA_NAND_INT_ENA */
++#define RA_INTENA_INT_OFFSET	0
++#define RA_INTENA_INT_MASK	0xff
++
++/* RA_NAND_INT_STA */
++#define RA_INTSTA_RX_START_EMPTY	BIT(7)
++#define RA_INTSTA_TX_START_EMPTY	BIT(6)
++#define RA_INTSTA_RX_COMPL_EMPTY	BIT(5)
++#define RA_INTSTA_TX_COMPL_EMPTY	BIT(4)
++#define RA_INTSTA_ECC_ERR	BIT(3)
++#define RA_INTSTA_RX_READY	BIT(2)
++#define RA_INTSTA_TX_READY	BIT(1)
++#define RA_INTSTA_XFER_DONE	BIT(0)
++
++/* RA_NAND_CTRL1 */
++#define RA_CTRL1_ECC_LOC3_OFFSET	16
++#define RA_CTRL1_ECC_LOC2_OFFSET	12
++#define RA_CTRL1_ECC_LOC1_OFFSET	8
++#define RA_CTRL1_ECC_LOC_MASK	0xfff
++#define RA_CTRL1_BYTE_SWAP	BIT(1)
++#define RA_CTRL1_PAGE_2K	BIT(0)
++
++/* RA_NAND_ECC1 */
++#define RA_ECC_MASK	0xffffff
++
++/* RA_NAND_ECC_ERR1 */
++#define RA_ECCERR_BYTE_OFFSET	6
++#define RA_ECCERR_BYTE_MASK	0x1ff
++#define RA_ECCERR_BIT_OFFSET	2
++#define RA_ECCERR_BIT_MASK	0x7
++#define RA_ECCERR_FAIL	BIT(0)
++
++struct ralink_nand {
++	struct mtd_info mtd;
++	struct nand_chip chip;
++	struct device *dev;
++	void __iomem *base;
++	struct resource *mem;
++	u32 buffer;
++	int offset;
++};
++
++struct ralink_nand_cmd {
++	u32 cmd1;
++	u32 cmd2;
++	u32 cmd3;
++	u32 addr1;
++	u32 addr2;
++	u32 conf;
++};
++
++static struct nand_ecclayout ralink_oob_64 = {
++	.eccbytes = 12,
++	.eccpos = {6, 7, 8, 22, 23, 24, 38, 39, 40, 54, 55, 56},
++	.oobfree = {
++		{.offset = 1, .length = 5},
++		{.offset = 9, .length = 13},
++		{.offset = 25, .length = 13},
++		{.offset = 41, .length = 7},
++	},
++};
++
++static inline struct ralink_nand *mtd_to_ralink_nand(struct mtd_info *mtd)
++{
++	return container_of(mtd, struct ralink_nand, mtd);
++}
++
++static void ralink_nand_write_buf(struct mtd_info *mtd, const uint8_t *buf,
++		int len)
++{
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++	int retry = 3000;
++	u32 status, tmp;
++	u32 *p = (u32 *)buf;
++
++	while (len > 4) {
++write_again:
++		status = readl(nand->base + RA_NAND_INT_STA);
++		if (status & RA_INTSTA_TX_READY) {
++			/* TODO: is this right? */
++			writel(*p++, nand->base + RA_NAND_DATA);
++			mb();
++			writel(RA_INTSTA_TX_READY, nand->base +
++					RA_NAND_INT_STA);
++			len -= 4;
++			ndelay(100);
++		} else if (status & RA_INTSTA_XFER_DONE) {
++			dev_err(nand->dev, "transfer done with %d not " \
++					"request write to flash\n", len);
++			return;
++		} else {
++			if (retry--)
++				ndelay(100);
++			else {
++				dev_err(nand->dev, "timeout %d bytes not " \
++						"write\n", len);
++				return;
++			}
++		}
++	}
++
++	if (len > 0) {
++		tmp = 0xffffffff;
++		memcpy((void *)&tmp, p, len);
++		p = (u32 *)&tmp;
++		goto write_again;
++	}
++}
++
++static void ralink_nand_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++	int i, retry = 3000;
++	u32 status;
++	u32 *p = (u32 *)buf;
++
++	while (len >= 4) {
++		status = readl(nand->base + RA_NAND_INT_STA);
++		if (status & RA_INTSTA_RX_READY) {
++			*p++ = readl(nand->base + RA_NAND_DATA);
++			mb();
++			writel(RA_INTSTA_RX_READY, nand->base +
++					RA_NAND_INT_STA);
++			len -= 4;
++			ndelay(100);
++		} else if (status & RA_INTSTA_XFER_DONE) {
++			dev_err(nand->dev, "transfer done with %d not " \
++					"request read from flash\n", len);
++			memset(p, 0xff, len);
++			len = 0;
++			break;
++		} else {
++			if (retry--)
++				ndelay(100);
++			else {
++				dev_err(nand->dev, "timeout %d bytes not "
++						"read\n", len);
++				memset(p, 0xff, len);
++				len = 0;
++				break;
++			}
++		}
++	}
++
++	if (len) {
++		buf = (uint8_t *)p;
++		for (i = 0; i < len; i++)
++			*buf++ = chip->read_byte(mtd);
++	}
++}
++
++static uint8_t ralink_nand_read_byte(struct mtd_info *mtd)
++{
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++	uint8_t *ret = (uint8_t *)nand->buffer;
++
++	if (nand->offset == 0) {
++		ralink_nand_read_buf(mtd, ret, 4);
++	} else {
++		ret += nand->offset;
++	}
++	nand->offset = (nand->offset + 1) & 0x3;
++
++	return *ret;
++}
++
++static u16 ralink_nand_read_word(struct mtd_info *mtd)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++
++	return chip->read_byte(mtd) | (chip->read_byte(mtd) << 8);
++}
++
++static void ralink_nand_select_chip(struct mtd_info *mtd, int chipnr)
++{
++        switch (chipnr) {
++        case -1:
++        case 0:
++                break;
++
++        default:
++                BUG();
++        }
++}
++
++static void ralink_nand_cmd_ctrl(struct mtd_info *mtd, int dat,
++		unsigned int ctrl)
++{
++	BUG();
++}
++
++static int ralink_nand_dev_ready(struct mtd_info *mtd)
++{
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++
++	return (readl(nand->base + RA_NAND_STATUS) & RA_STATUS_ND_READY);
++}
++
++static void ralink_nand_do_cmd(struct ralink_nand *nand,
++		struct ralink_nand_cmd *cmd)
++{
++	u32 reg;
++
++	/* clear data buffer */
++	reg = readl(nand->base + RA_NAND_CTRL0);
++	reg |= RA_CTRL0_DBUF_CLR;
++	writel(reg, nand->base + RA_NAND_CTRL0);
++	reg &= ~RA_CTRL0_DBUF_CLR;
++	writel(reg, nand->base + RA_NAND_CTRL0);
++
++	/* clear interrupt status */
++	reg = readl(nand->base + RA_NAND_INT_STA);
++	writel(reg, nand->base + RA_NAND_INT_STA);
++
++	/* setup command and address */
++	writel(cmd->cmd1, nand->base + RA_NAND_CMD1);
++	writel(cmd->cmd2, nand->base + RA_NAND_CMD2);
++	writel(cmd->cmd3, nand->base + RA_NAND_CMD3);
++	writel(cmd->addr1, nand->base + RA_NAND_ADDR);
++	writel(cmd->addr2, nand->base + RA_NAND_ADDR2);
++
++	mb();
++	writel(cmd->conf, nand->base + RA_NAND_TRANS_CFG);
++}
++
++static void ralink_nand_command(struct mtd_info *mtd, unsigned int command,
++		int column, int page_addr)
++{
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++	register struct nand_chip *chip = mtd->priv;
++	struct ralink_nand_cmd cmd;
++	u32 data_num, addr_num;
++
++	memset(&cmd, sizeof(cmd), 0);
++	cmd.conf = readl(nand->base + RA_NAND_TRANS_CFG);
++	cmd.conf &= (RA_TCFG_ECC_EN | RA_TCFG_DMA_EN);
++	cmd.conf |= RA_TCFG_KICK_TRANS;
++
++	/* Emulate NAND_CMD_READOOB */
++	if (command == NAND_CMD_READOOB) {
++		column += mtd->writesize;
++		command = NAND_CMD_READ0;
++	}
++	cmd.cmd1 = command;
++
++	data_num = addr_num = 0;
++	if (column != -1 || page_addr != -1) {
++		data_num = mtd->writesize + mtd->oobsize;
++
++		/* Serially input address */
++		if (column != -1) {
++			cmd.addr1 |= column & 0xffff;
++			addr_num += 2;
++			data_num -= column;
++		}
++
++		if (page_addr != -1) {
++			cmd.addr1 |= (page_addr << (addr_num * 8));
++			addr_num += 2;
++			/* One more address cycle for devices > 128MiB */
++			if (chip->chipsize > (128 << 20)) {
++				if (addr_num == 4)
++					cmd.addr2 = page_addr >> 16;
++				addr_num += 1;
++			}
++		}
++	}
++
++	/*
++	 * Program and erase have their own busy handlers status, sequential
++	 * in and status need no delay.
++	 */
++	switch (command) {
++
++	case NAND_CMD_PAGEPROG:
++	case NAND_CMD_ERASE2:
++		return;
++
++	case NAND_CMD_ERASE1:
++		cmd.cmd2 = NAND_CMD_ERASE2;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
++			(0x1 << RA_TCFG_CMD2_OFFSET) |
++			RA_TCFG_RESPB_CMD2;
++		goto do_cmd;
++
++	case NAND_CMD_STATUS:
++		data_num = 1;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET);
++		goto do_cmd;
++
++	case NAND_CMD_SEQIN:
++	case NAND_CMD_RNDIN:
++		cmd.cmd3 = NAND_CMD_PAGEPROG;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
++			(0x1 << RA_TCFG_CMD3_OFFSET) |
++			RA_TCFG_RESPB_CMD3 |
++			RA_TCFG_WR_TRANS;
++		goto do_cmd;
++
++	case NAND_CMD_RESET:
++		cmd.cmd2 = command;
++		cmd.conf |= (0x1 << RA_TCFG_CMD2_OFFSET) | RA_TCFG_RESPB_CMD2;
++		break;
++
++	case NAND_CMD_READID:
++		if (column == 0x20)
++			data_num = 4;
++		else if (column == 0x40)
++			data_num = 5;
++		else
++			data_num = 8;
++		addr_num = 1;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
++			(0x1 << RA_TCFG_ADDR_OFFSET);
++		break;
++
++	case NAND_CMD_PARAM:
++		if (column == 0x00)
++			data_num = 256 * 3;
++		else if (column == 0x40)
++			data_num = 512 * 3;
++		addr_num = 1;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
++			(0x1 << RA_TCFG_ADDR_OFFSET) |
++			RA_TCFG_RESPB_ADDR;
++		break;
++
++        case NAND_CMD_RNDOUT:
++		cmd.cmd2 = NAND_CMD_NONE;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
++			(0x1 << RA_TCFG_CMD2_OFFSET);
++		break;
++
++	case NAND_CMD_READ0:
++		cmd.cmd2 = NAND_CMD_READSTART;
++		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
++			(0x1 << RA_TCFG_CMD2_OFFSET) |
++			RA_TCFG_RESPB_CMD2;
++		break;
++
++	default:
++		dev_err(nand->dev, "unknown command %02x\n", command);
++		return;
++	}
++
++	cmd.conf |= (data_num << RA_TCFG_DATA_OFFSET) |
++		(addr_num << RA_TCFG_ADDR_OFFSET);
++	ralink_nand_do_cmd(nand, &cmd);
++
++	/*
++	 * Apply this short delay always to ensure that we do wait tWB in
++	 * any case on any machine.
++	 */
++	ndelay(100);
++
++	nand_wait_ready(mtd);
++	return;
++
++do_cmd:
++	cmd.conf |= (data_num << RA_TCFG_DATA_OFFSET) |
++		(addr_num << RA_TCFG_ADDR_OFFSET);
++	ralink_nand_do_cmd(nand, &cmd);
++}
++
++static void ralink_nand_hwctl(struct mtd_info *mtd, int mode)
++{
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++	u32 reg;
++
++	/* enable ecc */
++	reg = readl(nand->base + RA_NAND_TRANS_CFG);
++	reg |= RA_TCFG_ECC_EN;
++	writel(reg, nand->base + RA_NAND_TRANS_CFG);
++}
++
++static void ralink_ecc_disable(struct ralink_nand *nand)
++{
++	u32 reg;
++
++	reg = readl(nand->base + RA_NAND_TRANS_CFG);
++	reg &= ~RA_TCFG_ECC_EN;
++	writel(reg, nand->base + RA_NAND_TRANS_CFG);
++}
++
++static int ralink_nand_calculate(struct mtd_info *mtd, const uint8_t *dat,
++		uint8_t *ecc_code)
++{
++	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
++	struct nand_chip *chip = &nand->chip;
++	int eccbytes = chip->ecc.bytes;
++	u32 reg[4];
++	int i, j;
++
++	ralink_ecc_disable(nand);
++
++	reg[0] = readl(nand->base + RA_NAND_ECC1);
++	reg[1] = readl(nand->base + RA_NAND_ECC2);
++	reg[2] = readl(nand->base + RA_NAND_ECC3);
++	reg[3] = readl(nand->base + RA_NAND_ECC4);
++
++	for (i = 0, j = 0; j < 4; i += eccbytes, j++)
++		memcpy(&ecc_code[i], &reg[j], 3);
++
++	return 0;
++}
++
++static int ralink_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip,
++		uint8_t *buf, int oob_required, int page)
++{
++	int i, eccsize = chip->ecc.size;
++	int eccbytes = chip->ecc.bytes;
++	int eccsteps = chip->ecc.steps;
++	uint8_t *p = buf;
++	uint8_t *ecc_calc = chip->buffers->ecccalc;
++	uint8_t *ecc_code = chip->buffers->ecccode;
++	uint32_t *eccpos = chip->ecc.layout->eccpos;
++	unsigned int max_bitflips = 0;
++
++	chip->ecc.hwctl(mtd, NAND_ECC_READ);
++	chip->read_buf(mtd, p, mtd->writesize);
++	chip->read_buf(mtd, chip->oob_poi, mtd->oobsize);
++	chip->ecc.calculate(mtd, p, ecc_calc);
++
++	for (i = 0; i < chip->ecc.total; i++)
++		ecc_code[i] = chip->oob_poi[eccpos[i]];
++
++	eccsteps = chip->ecc.steps;
++	p = buf;
++
++	for (i = 0 ; eccsteps; eccsteps--, i += eccbytes, p += eccsize) {
++		int stat;
++
++		stat = chip->ecc.correct(mtd, p, &ecc_code[i], &ecc_calc[i]);
++		if (stat < 0) {
++			mtd->ecc_stats.failed++;
++		} else {
++			mtd->ecc_stats.corrected += stat;
++			max_bitflips = max_t(unsigned int, max_bitflips, stat);
++		}
++	}
++	return max_bitflips;
++}
++
++static int ralink_nand_write_page(struct mtd_info *mtd, struct nand_chip *chip,
++		const uint8_t *buf, int oob_required,
++		int page)
++{
++	int i;
++	uint8_t *ecc_calc = chip->buffers->ecccalc;
++	const uint8_t *p = buf;
++	uint32_t *eccpos = chip->ecc.layout->eccpos;
++
++	chip->ecc.hwctl(mtd, NAND_ECC_WRITE);
++	chip->write_buf(mtd, p, mtd->writesize);
++	chip->ecc.calculate(mtd, p, ecc_calc);
++
++	for (i = 0; i < chip->ecc.total; i++)
++		chip->oob_poi[eccpos[i]] = ecc_calc[i];
++
++	chip->write_buf(mtd, chip->oob_poi, mtd->oobsize);
++
++	return 0;
++}
++
++static void ralink_nand_wp_enable(struct ralink_nand *nand)
++{
++	u32 reg;
++
++	reg = readl(nand->base + RA_NAND_CTRL0);
++	reg |= RA_CTRL0_WP;
++	writel(reg, nand->base + RA_NAND_CTRL0);
++}
++
++static void ralink_nand_hw_init(struct ralink_nand *nand,
++		struct nand_ecc_ctrl *ecc)
++{
++	u32 reg, *pos;
++
++	/* save time settings before reset */
++	reg = readl(nand->base + RA_NAND_CTRL0) & RA_CTRL0_TIME_MASK;
++
++	device_reset(nand->dev);
++
++	/* TODO: set time setting according to flash spec */
++	if (!reg)
++		reg = RA_CTRL0_TIME_DEFAULT;
++	writel(reg, nand->base + RA_NAND_CTRL0);
++
++	/* disable interrupt */
++	writel(0x0, nand->base + RA_NAND_INT_ENA);
++
++	/* setup ecc offset in oob */
++	pos = ecc->layout->eccpos;
++	reg = (pos[0] << RA_CTRL1_ECC_LOC1_OFFSET) |
++		(pos[1] << RA_CTRL1_ECC_LOC2_OFFSET) |
++		(pos[2] << RA_CTRL1_ECC_LOC3_OFFSET) |
++		RA_CTRL1_PAGE_2K;
++	writel(reg, nand->base + RA_NAND_CTRL1);
++}
++
++static int ralink_nand_probe(struct platform_device *pdev)
++{
++	int ret;
++	struct ralink_nand *nand;
++	struct nand_chip *chip;
++	struct nand_ecc_ctrl *ecc;
++	struct mtd_info *mtd;
++	struct mtd_part_parser_data ppdata;
++
++	nand = devm_kzalloc(&pdev->dev, sizeof(*nand), GFP_KERNEL);
++	if (!nand) {
++		dev_err(&pdev->dev, "failed to allocate memory\n");
++		return -ENOMEM;
++	}
++
++	nand->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!nand->mem) {
++		dev_err(&pdev->dev, "failed to get platform memory resource\n");
++		return -ENXIO;
++	}
++
++	nand->base = devm_ioremap_resource(&pdev->dev, nand->mem);
++	if (IS_ERR(nand->base))
++		return PTR_ERR(nand->base);
++
++	nand->dev = &pdev->dev;
++	mtd = &nand->mtd;
++	chip = &nand->chip;
++	ecc = &chip->ecc;
++
++	mtd->priv = chip;
++	mtd->dev.parent = &pdev->dev;
++	mtd->name = NAND_DRIVER_NAME;
++	ppdata.of_node = pdev->dev.of_node;
++
++	chip->read_byte = ralink_nand_read_byte;
++	chip->read_word = ralink_nand_read_word;
++	chip->write_buf = ralink_nand_write_buf;
++	chip->read_buf = ralink_nand_read_buf;
++	chip->select_chip = ralink_nand_select_chip;
++	chip->cmd_ctrl = ralink_nand_cmd_ctrl;
++	chip->dev_ready = ralink_nand_dev_ready;
++	chip->cmdfunc = ralink_nand_command;
++	chip->options = NAND_NO_SUBPAGE_WRITE;
++
++	ecc->mode = NAND_ECC_HW;
++	ecc->size = 512;
++	ecc->bytes = 3;
++	ecc->strength = 1;
++	ecc->layout = &ralink_oob_64;
++	ecc->hwctl = ralink_nand_hwctl;
++	ecc->calculate = ralink_nand_calculate;
++	ecc->read_page = ralink_nand_read_page;
++	ecc->write_page = ralink_nand_write_page;
++
++	ralink_nand_hw_init(nand, ecc);
++
++	ret = nand_scan(mtd, 1);
++	if (ret)
++		goto err;
++
++	ret = mtd_device_parse_register(mtd, NULL, &ppdata, NULL, 0);
++	if (ret)
++		goto err_release;
++
++	if (mtd->oobsize != 64) {
++		dev_err(&pdev->dev, "unsupport oob size %d\n", mtd->oobsize);
++		ret = -EINVAL;
++		goto err_release;
++	}
++	if (mtd->writesize != 2048) {
++		dev_err(&pdev->dev, "unsupport page size %d\n",
++				mtd->writesize);
++		ret = -EINVAL;
++		goto err_release;
++	}
++
++	platform_set_drvdata(pdev, nand);
++err:
++	return ret;
++
++err_release:
++	nand_release(mtd);
++
++	return ret;
++}
++
++static int ralink_nand_remove(struct platform_device *pdev)
++{
++	struct ralink_nand *nand = platform_get_drvdata(pdev);
++
++	nand_release(&nand->mtd);
++
++	ralink_nand_wp_enable(nand);
++
++	return 0;
++}
++
++static const struct of_device_id ralink_nand_ids[] = {
++	{ .compatible = "mediatek,mt7620-nand" },
++};
++MODULE_DEVICE_TABLE(of, ralink_nand_ids);
++
++static struct platform_driver ralink_nand_driver = {
++	.probe = ralink_nand_probe,
++	.remove = ralink_nand_remove,
++	.driver = {
++		.name = NAND_DRIVER_NAME,
++		.of_match_table = ralink_nand_ids,
++	},
++};
++module_platform_driver(ralink_nand_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Michael Lee <igvtee@gmail.com>");
++MODULE_DESCRIPTION("NAND controller driver for MediaTek MT7620 SoC");
+--- a/drivers/mtd/nand/Kconfig
++++ b/drivers/mtd/nand/Kconfig
+@@ -546,4 +546,10 @@ config MTD_NAND_HISI504
+ 	help
+ 	  Enables support for NAND controller on Hisilicon SoC Hip04.
+ 
++config MTD_NAND_RALINK
++	tristate "Support for MediaTek MT7620 SoC NAND controller"
++	depends on SOC_MT7620
++	select MTD_NAND_IDS
++	select MTD_NAND_ECC
++
+ endif # MTD_NAND
+--- a/drivers/mtd/nand/Makefile
++++ b/drivers/mtd/nand/Makefile
+@@ -55,5 +55,6 @@ obj-$(CONFIG_MTD_NAND_BCM47XXNFLASH)	+=
+ obj-$(CONFIG_MTD_NAND_SUNXI)		+= sunxi_nand.o
+ obj-$(CONFIG_MTD_NAND_HISI504)	        += hisi504_nand.o
+ obj-$(CONFIG_MTD_NAND_BRCMNAND)		+= brcmnand/
++obj-$(CONFIG_MTD_NAND_RALINK)	        += ralink_nand.o
+ 
+ nand-objs := nand_base.o nand_bbt.o nand_timings.o
