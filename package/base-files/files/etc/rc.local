@@ -1,4 +1,12 @@
 # Put your custom commands here that should be executed once
 # the system init finished. By default this file does nothing.
 
+# shairport-sync multicast route
+#ip route add 224.0.0.0/4 dev br-lan
+
+# audio init
+alsactl init
+amixer sset "Left Output Mixer PCM" on
+amixer sset "Right Output Mixer PCM" on
+
 exit 0
