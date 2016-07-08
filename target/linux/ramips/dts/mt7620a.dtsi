@@ -175,6 +175,27 @@
 			status = "disabled";
 		};
 
+		nand: nand@800 {
+			compatible = "mediatek,mt7620-nand";
+			reg = <0x800 0x100>;
+
+			resets = <&rstctrl 15>;
+			reset-names = "nand";
+
+			interrupt-parent = <&intc>;
+			interrupts = <8>;
+
+			dma-req = <1>;
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&nand_pins>;
+
+			status = "disabled";
+		};
+
 		i2c: i2c@900 {
 			compatible = "ralink,rt2880-i2c";
 			reg = <0x900 0x100>;
@@ -390,6 +411,13 @@
 			pcie {
 				ralink,group = "pcie";
 				ralink,function = "pcie rst";
+			};
+		};
+
+		nand_pins: nand {
+			nand {
+				ralink,group = "nd_sd";
+				ralink,function = "nand";
 			};
 		};
 	};
