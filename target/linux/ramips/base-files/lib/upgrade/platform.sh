@@ -79,6 +79,7 @@ platform_check_image() {
 	microwrt|\
 	miniembplug|\
 	miniembwifi|\
+	miwifi-3|\
 	miwifi-mini|\
 	miwifi-nano|\
 	mlw221|\

@@ -330,6 +330,19 @@ define Device/wrtnode
 endef
 TARGET_DEVICES += wrtnode
 
+define Device/miwifi-3
+  DTS := MIWIFI-3
+  BLOCKSIZE := 128KiB
+  PAGESIZE := 2048
+  FILESYSTEMS := squashfs
+  IMAGE_SIZE := 132120576
+  KERNEL := $(KERNEL_DTB) | pad-offset 131072 64 | uImage lzma
+  IMAGE/sysupgrade.bin := append-kernel | append-ubi | check-size $$$$(IMAGE_SIZE)
+  DEVICE_TITLE := Xiaomi MiWiFi 3
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+endef
+TARGET_DEVICES += miwifi-3
+
 define Device/miwifi-mini
   DTS := MIWIFI-MINI
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
