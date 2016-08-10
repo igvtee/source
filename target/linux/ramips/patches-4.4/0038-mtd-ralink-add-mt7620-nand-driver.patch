@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/drivers/mtd/nand/ralink_nand.c
-@@ -0,0 +1,806 @@
+@@ -0,0 +1,825 @@
 +/*
 + *  Copyright (C) 2009-2016, Michael Lee <igvtee@gmail.com>
 + *  Ralink/MediaTek MT7620 SoC NAND controller driver
@@ -405,6 +405,23 @@
 +	writel(cmd->conf, nand->base + RA_NAND_TRANS_CFG);
 +}
 +
++static void ralink_nand_xfer_done(struct ralink_nand *nand)
++{
++	unsigned long timeo;
++	u32 status;
++
++	timeo = jiffies + msecs_to_jiffies(RA_MAX_TIMEOUT_MS);
++	do {
++		status = readl(nand->base + RA_NAND_INT_STA);
++		if (status & RA_INTSTA_XFER_DONE)
++			return;
++
++		cpu_relax();
++	} while (time_before(jiffies, timeo));
++
++	dev_err(nand->dev, "write transfer not done\n");
++}
++
 +static void ralink_nand_command(struct mtd_info *mtd, unsigned int command,
 +		int column, int page_addr)
 +{
@@ -453,6 +470,7 @@
 +	switch (command) {
 +
 +	case NAND_CMD_PAGEPROG:
++		ralink_nand_xfer_done(nand);
 +	case NAND_CMD_ERASE2:
 +		return;
 +
@@ -470,9 +488,6 @@
 +		goto do_cmd;
 +
 +	case NAND_CMD_SEQIN:
-+		/* TODO: maybe need better way to enable ecc */
-+		if (column == 0)
-+			cmd.conf |= RA_TCFG_ECC_EN;
 +	case NAND_CMD_RNDIN:
 +		cmd.cmd3 = NAND_CMD_PAGEPROG;
 +		cmd.conf |= (0x1 << RA_TCFG_CMD1_OFFSET) |
@@ -492,8 +507,6 @@
 +		addr_num = 1;
 +		if (column == 0x20)
 +			data_num = 4;
-+		else if (column == 0x40)
-+			data_num = 5;
 +		else
 +			data_num = 8;
 +		goto do_cmd;
@@ -552,10 +565,16 @@
 +	struct ralink_nand *nand = mtd_to_ralink_nand(mtd);
 +	u32 reg;
 +
-+	/* check ecc enable */
-+	reg = readl(nand->base + RA_NAND_TRANS_CFG);
-+	if (!(reg & RA_TCFG_ECC_EN))
-+		dev_err(nand->dev, "hw ecc not enable\n");
++	if (mode == NAND_ECC_READ) {
++		/* check ecc enable */
++		reg = readl(nand->base + RA_NAND_TRANS_CFG);
++		if (!(reg & RA_TCFG_ECC_EN))
++			dev_err(nand->dev, "hw ecc not enable\n");
++	} else {
++		reg = readl(nand->base + RA_NAND_TRANS_CFG);
++		reg |= RA_TCFG_ECC_EN;
++		writel(reg, nand->base + RA_NAND_TRANS_CFG);
++	}
 +}
 +
 +static int ralink_nand_calculate(struct mtd_info *mtd, const uint8_t *dat,
