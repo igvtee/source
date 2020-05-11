@@ -442,9 +442,6 @@
 		interrupt-names = "nfi", "ecc";
 		interrupts = <GIC_SHARED 14 IRQ_TYPE_LEVEL_HIGH
 			GIC_SHARED 15 IRQ_TYPE_LEVEL_HIGH>;
-
-		clocks = <&clkctrl 15>;
-		clock-names = "nand";
 	};
 
 	ethsys: syscon@1e000000 {
