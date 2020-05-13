@@ -42,15 +42,90 @@
  }
  
  static int mt7621_nfc_send_command(struct mt7621_nfc *nfc, u8 command)
-@@ -838,6 +852,7 @@ static int mt7621_nfc_ecc_init(struct mt
- 		return -EINVAL;
+@@ -789,6 +803,7 @@ static int mt7621_nfc_calc_ecc_strength(
  	}
  
+ 	nand->ecc.strength = mt7621_ecc_strength[i];
 +	nand->ecc.prepad = NFI_FDM_SIZE;
- 	nand->ecc.size = ECC_SECTOR_SIZE;
- 	nand->ecc.steps = mtd->writesize / nand->ecc.size;
+ 	nand->ecc.bytes =
+ 		DIV_ROUND_UP(nand->ecc.strength * ECC_PARITY_BITS, 8);
  
-@@ -1299,6 +1314,16 @@ static int mt7621_nfc_probe(struct platf
+@@ -820,6 +835,7 @@ static int mt7621_nfc_set_spare_per_sect
+ 	}
+ 
+ 	nfc->spare_per_sector = mt7621_nfi_spare_size[i];
++	nand->ecc.postpad = mt7621_nfi_spare_size[i] - size;
+ 
+ 	return i;
+ }
+@@ -997,6 +1013,46 @@ static void mt7621_nfc_read_sector_fdm(s
+ 		oobptr[i + 4] = (valm >> (i * 8)) & 0xff;
+ }
+ 
++static int mt7621_read_parity_oob(struct mtd_info *mtd, struct nand_chip *nand,
++			   int page)
++{
++	struct mt7621_nfc *nfc = nand_get_controller_data(nand);
++	int chunk = nand->ecc.bytes + nand->ecc.postpad;
++	int eccsize = nand->ecc.size + nand->ecc.prepad;
++	int i, sndrnd = 0, pos, ret;
++
++	ret = nand_read_page_op(nand, page, eccsize, NULL, 0);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < nand->ecc.steps; i++) {
++		if (sndrnd) {
++			pos = eccsize + i * (eccsize + chunk);
++			if (mtd->writesize > 512)
++				ret = nand_change_read_column_op(nand, pos,
++								 NULL, 0,
++								 false);
++			else
++				ret = nand_read_page_op(nand, page, pos, NULL,
++							0);
++			if (ret)
++				return ret;
++		} else
++			sndrnd = 1;
++		ret = nand_read_data_op(nand, oob_ecc_ptr(nfc, i),
++					chunk, false);
++		if (ret)
++			return ret;
++	}
++
++	chunk = mtd->oobsize - (nand->ecc.steps * nfc->spare_per_sector);
++	if (chunk)
++		ret = nand_read_data_op(nand, oob_ecc_ptr(nfc, i),
++					chunk, false);
++
++	return 0;
++}
++
+ static int mt7621_nfc_read_page_hwecc(struct nand_chip *nand, uint8_t *buf,
+ 				      int oob_required, int page)
+ {
+@@ -1024,7 +1080,8 @@ static int mt7621_nfc_read_page_hwecc(st
+ 
+ 		rc = mt7621_ecc_decoder_wait_done(nfc, i);
+ 
+-		mt7621_nfc_read_sector_fdm(nfc, i);
++		if (oob_required)
++			mt7621_nfc_read_sector_fdm(nfc, i);
+ 
+ 		if (rc < 0) {
+ 			bitflips = -EIO;
+@@ -1051,6 +1108,9 @@ static int mt7621_nfc_read_page_hwecc(st
+ 
+ 	nfi_write16(nfc, NFI_CON, 0);
+ 
++	if (oob_required)
++		mt7621_read_parity_oob(mtd, nand, page);
++
+ 	return bitflips;
+ }
+ 
+@@ -1299,6 +1359,16 @@ static int mt7621_nfc_probe(struct platf
  			return ret;
  		}
  	}
