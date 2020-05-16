@@ -85,7 +85,7 @@
  #define ECC_FDMADDR			0x13c
  
  /* ENCIDLE and DECIDLE */
-@@ -217,6 +248,9 @@ struct mt7621_nfc {
+@@ -217,7 +248,11 @@ struct mt7621_nfc {
  	void __iomem *nfi_regs;
  	void __iomem *ecc_regs;
  
@@ -93,9 +93,11 @@
 +	struct completion ecc_done;
 +
  	u32 spare_per_sector;
++	int csline;
  };
  
-@@ -244,6 +278,11 @@ static inline void nfi_write16(struct mt
+ static const u16 mt7621_nfi_page_size[] = { SZ_512, SZ_2K, SZ_4K };
+@@ -244,6 +279,11 @@ static inline void nfi_write16(struct mt
  	writew(val, nfc->nfi_regs + reg);
  }
  
@@ -107,7 +109,7 @@
  static inline void ecc_write16(struct mt7621_nfc *nfc, u32 reg, u16 val)
  {
  	writew(val, nfc->ecc_regs + reg);
-@@ -259,25 +298,6 @@ static inline void ecc_write32(struct mt
+@@ -259,25 +299,6 @@ static inline void ecc_write32(struct mt
  	return writel(val, nfc->ecc_regs + reg);
  }
  
@@ -133,7 +135,7 @@
  static int mt7621_ecc_wait_idle(struct mt7621_nfc *nfc, u32 reg)
  {
  	struct device *dev = nfc->dev;
-@@ -295,25 +315,6 @@ static int mt7621_ecc_wait_idle(struct m
+@@ -295,25 +316,6 @@ static int mt7621_ecc_wait_idle(struct m
  	return 0;
  }
  
@@ -159,7 +161,7 @@
  static void mt7621_ecc_encoder_op(struct mt7621_nfc *nfc, bool enable)
  {
  	mt7621_ecc_wait_idle(nfc, ECC_ENCIDLE);
-@@ -326,46 +327,28 @@ static void mt7621_ecc_decoder_op(struct
+@@ -326,46 +328,28 @@ static void mt7621_ecc_decoder_op(struct
  	ecc_write16(nfc, ECC_DECCON, enable ? DEC_EN : 0);
  }
  
@@ -219,7 +221,7 @@
  	}
  
  	return bitflips;
-@@ -416,6 +399,8 @@ static inline void mt7621_nfc_hw_init(st
+@@ -416,6 +400,8 @@ static inline void mt7621_nfc_hw_init(st
  {
  	u32 acccon;
  
@@ -228,7 +230,7 @@
  	/*
  	 * CNRNB: nand ready/busy register
  	 * -------------------------------
-@@ -432,6 +417,14 @@ static inline void mt7621_nfc_hw_init(st
+@@ -432,6 +418,14 @@ static inline void mt7621_nfc_hw_init(st
  			   ACCCON_RLT_DEF);
  
  	nfi_write32(nfc, NFI_ACCCON, acccon);
@@ -243,7 +245,7 @@
  }
  
  static int mt7621_nfc_send_command(struct mt7621_nfc *nfc, u8 command)
-@@ -553,19 +546,6 @@ static void mt7621_nfc_read_data(struct
+@@ -553,19 +547,6 @@ static void mt7621_nfc_read_data(struct
  	}
  }
  
@@ -263,7 +265,7 @@
  static void mt7621_nfc_pio_write(struct mt7621_nfc *nfc, u32 val, bool bw)
  {
  	u32 reg;
-@@ -608,19 +588,6 @@ static void mt7621_nfc_write_data(struct
+@@ -608,19 +589,6 @@ static void mt7621_nfc_write_data(struct
  	}
  }
  
@@ -283,7 +285,19 @@
  static int mt7621_nfc_dev_ready(struct mt7621_nfc *nfc,
  				unsigned int timeout_ms)
  {
-@@ -789,6 +756,7 @@ static int mt7621_nfc_calc_ecc_strength(
+@@ -698,6 +666,11 @@ static int mt7621_nfc_setup_data_interfa
+ 	if (IS_ERR(timings))
+ 		return -ENOTSUPP;
+ 
++	/* same cs line don't need init again */
++	if (csline == nfc->csline)
++		return 0;
++	nfc->csline = csline;
++
+ 	rate = clk_get_rate(nfc->nfi_clk);
+ 
+ 	/* turn clock rate into KHZ */
+@@ -789,6 +762,7 @@ static int mt7621_nfc_calc_ecc_strength(
  	}
  
  	nand->ecc.strength = mt7621_ecc_strength[i];
@@ -291,7 +305,7 @@
  	nand->ecc.bytes =
  		DIV_ROUND_UP(nand->ecc.strength * ECC_PARITY_BITS, 8);
  
-@@ -820,6 +788,7 @@ static int mt7621_nfc_set_spare_per_sect
+@@ -820,6 +794,7 @@ static int mt7621_nfc_set_spare_per_sect
  	}
  
  	nfc->spare_per_sector = mt7621_nfi_spare_size[i];
@@ -299,7 +313,7 @@
  
  	return i;
  }
-@@ -858,7 +827,7 @@ static int mt7621_nfc_ecc_init(struct mt
+@@ -858,7 +833,7 @@ static int mt7621_nfc_ecc_init(struct mt
  			    nand->ecc.strength * ECC_PARITY_BITS;
  	ecc_deccfg = ecc_cap | (DEC_MODE_NFI << DEC_MODE_S) |
  		     (decode_block_size << DEC_CS_S) |
@@ -308,7 +322,7 @@
  
  	mt7621_ecc_encoder_op(nfc, false);
  	ecc_write32(nfc, ECC_ENCCNFG, ecc_enccfg);
-@@ -866,6 +835,10 @@ static int mt7621_nfc_ecc_init(struct mt
+@@ -866,6 +841,10 @@ static int mt7621_nfc_ecc_init(struct mt
  	mt7621_ecc_decoder_op(nfc, false);
  	ecc_write32(nfc, ECC_DECCNFG, ecc_deccfg);
  
@@ -319,7 +333,7 @@
  	return 0;
  }
  
-@@ -927,12 +900,23 @@ static int mt7621_nfc_ooblayout_free(str
+@@ -927,12 +906,23 @@ static int mt7621_nfc_ooblayout_free(str
  				     struct mtd_oob_region *oob_region)
  {
  	struct nand_chip *nand = mtd_to_nand(mtd);
@@ -346,7 +360,7 @@
  
  	return 0;
  }
-@@ -941,12 +925,13 @@ static int mt7621_nfc_ooblayout_ecc(stru
+@@ -941,12 +931,13 @@ static int mt7621_nfc_ooblayout_ecc(stru
  				    struct mtd_oob_region *oob_region)
  {
  	struct nand_chip *nand = mtd_to_nand(mtd);
@@ -363,7 +377,7 @@
  
  	return 0;
  }
-@@ -956,165 +941,287 @@ static const struct mtd_ooblayout_ops mt
+@@ -956,165 +947,287 @@ static const struct mtd_ooblayout_ops mt
  	.ecc = mt7621_nfc_ooblayout_ecc,
  };
  
@@ -498,8 +512,7 @@
 -			mt7621_nfc_read_data_discard(nfc, nand->ecc.size);
 +	return ret;
 +}
- 
--		rc = mt7621_ecc_decoder_wait_done(nfc, i);
++
 +static int mt7621_write_oob_raw(struct nand_chip *nand, int page, int hwecc)
 +{
 +	struct mtd_info *mtd = nand_to_mtd(nand);
@@ -520,15 +533,12 @@
 +	} else
 +		pos = eccsize;
  
--		mt7621_nfc_read_sector_fdm(nfc, i);
+-		rc = mt7621_ecc_decoder_wait_done(nfc, i);
 +	ret = nand_prog_page_begin_op(nand, page, pos, NULL, 0);
 +	if (ret)
 +		goto err;
  
--		if (rc < 0) {
--			bitflips = -EIO;
--			continue;
--		}
+-		mt7621_nfc_read_sector_fdm(nfc, i);
 +	for (i = 0; i < steps; i++) {
 +		if (sndcmd) {
 +			if (mtd->writesize <= 512) {
@@ -557,6 +567,14 @@
 +			sndcmd = 1;
 +		len = min_t(int, length, chunk);
  
+-		if (rc < 0) {
+-			bitflips = -EIO;
+-			continue;
+-		}
++		ret = nand_write_data_op(nand, bufpoi, len, false);
++		if (ret)
++			goto err;
+ 
 -		rc = mt7621_ecc_correct_check(nfc,
 -			buf ? page_data_ptr(nand, buf, i) : NULL,
 -			oob_fdm_ptr(nand, i), i);
@@ -571,12 +589,6 @@
 -			bitflips += rc;
 -			mtd->ecc_stats.corrected += rc;
 -		}
--	}
-+		ret = nand_write_data_op(nand, bufpoi, len, false);
-+		if (ret)
-+			goto err;
- 
--	mt7621_ecc_decoder_op(nfc, false);
 +		bufpoi += len;
 +		length -= len;
 +	}
@@ -584,8 +596,10 @@
 +		ret = nand_write_data_op(nand, bufpoi, length, false);
 +		if (ret)
 +			goto err;
-+	}
+ 	}
  
+-	mt7621_ecc_decoder_op(nfc, false);
+-
 +err:
  	nfi_write16(nfc, NFI_CON, 0);
 +	if (ret)
@@ -753,7 +767,7 @@
  
  	return 1;
  }
-@@ -1125,6 +1232,9 @@ static int mt7621_nfc_write_page_hwecc(s
+@@ -1125,6 +1238,9 @@ static int mt7621_nfc_write_page_hwecc(s
  {
  	struct mt7621_nfc *nfc = nand_get_controller_data(nand);
  	struct mtd_info *mtd = nand_to_mtd(nand);
@@ -763,7 +777,7 @@
  
  	if (mt7621_nfc_check_empty_page(nand, buf)) {
  		/*
-@@ -1139,30 +1249,63 @@ static int mt7621_nfc_write_page_hwecc(s
+@@ -1139,30 +1255,63 @@ static int mt7621_nfc_write_page_hwecc(s
  		return 0;
  	}
  
@@ -838,7 +852,7 @@
  }
  
  static int mt7621_nfc_write_page_raw(struct nand_chip *nand,
-@@ -1170,6 +1313,8 @@ static int mt7621_nfc_write_page_raw(str
+@@ -1170,6 +1319,8 @@ static int mt7621_nfc_write_page_raw(str
  				     int page)
  {
  	struct mt7621_nfc *nfc = nand_get_controller_data(nand);
@@ -847,7 +861,7 @@
  	int i;
  
  	nand_prog_page_begin_op(nand, page, 0, NULL, 0);
-@@ -1179,23 +1324,20 @@ static int mt7621_nfc_write_page_raw(str
+@@ -1179,23 +1330,20 @@ static int mt7621_nfc_write_page_raw(str
  	nfi_write16(nfc, NFI_CON,
  		    CON_NFI_BWR | (nand->ecc.steps << CON_NFI_SEC_S));
  
@@ -882,7 +896,7 @@
  	mt7621_nfc_wait_write_completion(nfc, nand);
  
  	nfi_write16(nfc, NFI_CON, 0);
-@@ -1205,12 +1347,17 @@ static int mt7621_nfc_write_page_raw(str
+@@ -1205,12 +1353,17 @@ static int mt7621_nfc_write_page_raw(str
  
  static int mt7621_nfc_write_oob_hwecc(struct nand_chip *nand, int page)
  {
@@ -902,7 +916,7 @@
  }
  
  static int mt7621_nfc_init_chip(struct mt7621_nfc *nfc)
-@@ -1259,12 +1406,60 @@ static int mt7621_nfc_init_chip(struct m
+@@ -1259,12 +1412,60 @@ static int mt7621_nfc_init_chip(struct m
  	return 0;
  }
  
@@ -964,7 +978,15 @@
  
  	nfc = devm_kzalloc(dev, sizeof(*nfc), GFP_KERNEL);
  	if (!nfc)
-@@ -1299,6 +1494,46 @@ static int mt7621_nfc_probe(struct platf
+@@ -1273,6 +1474,7 @@ static int mt7621_nfc_probe(struct platf
+ 	nand_controller_init(&nfc->controller);
+ 	nfc->controller.ops = &mt7621_nfc_controller_ops;
+ 	nfc->dev = dev;
++	nfc->csline = 0xf;
+ 
+ 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "nfi");
+ 	nfc->nfi_regs = devm_ioremap_resource(dev, res);
+@@ -1299,6 +1501,46 @@ static int mt7621_nfc_probe(struct platf
  			return ret;
  		}
  	}
